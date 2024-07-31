@@ -1,0 +1,370 @@
+!!ARBfp1.0
+OPTION ARB_precision_hint_nicest;
+#
+# Fragment program used for rendering GLVolume instances in 3D. This may be
+# used multiple times with a ping-pong approach, by passing in the colour
+# and depth textures from a previous pass.
+#
+# See the glvolume_common.prog routine for the volume sampling logic.
+#
+# Input parameters:
+#
+#   {{ param_voxValXform }}
+#   {{ param_clipping }}
+#   {{ param_modulate }} - not used
+#   {{ param_negCmap }}
+#
+#   {{ param_screenSize }} - First two components contain the screen width
+#      and height in pixels. Third component determines whether to modulate
+#      samples by voxel intensity (blendByIntensity, +1), or whether to
+#      only use the blend factor (-1).
+#
+#   {{ param_rayStep }} - xyz is a vector defining how far to move through
+#      the volume texture space on each ray-casting iteration.
+#
+#   {{ param_tex2ScreenXform }} - A transformation matrix which transforms
+#      image texture coordinates into normalised device coordinates. Only
+#      the row which generates the Z-coordinate should be passed in.
+#
+#   {{ param_settings }} - Contains other parametres controlling the
+#      ray-casting:
+#        x: How much each sampled point contributes to the final colour (the
+#           blending factor).
+#
+#        y: Starting iteration on a multi-pass render. Used to determine
+#           the initial texture coordinates (texCoord + start * rayStep)
+#
+#        z: +1 if the output transparency should be adjusted by the
+#           global transparency, -1 otherwise.
+#        w: global transparency to use if y == +1
+#
+#   {{ param5_clipPlanes }} - Up to five clipping plane equations.
+#
+# Input varyings:
+#   {{ varying_texCoord }}         - Image texture coordinates
+#   {{ varying_clipTexCoord }}     - not used
+#   {{ varying_modTexCoord }}      - not used
+#
+# Input textures:
+#   {{ texture_startingTexture }}  - Texture containing colour from a previous
+#                                    pass
+#   {{ texture_depthTexture }}     - Texture containing depth from a previous
+#                                    pass.
+#   {{ texture_imageTexture }}     - Texture containing image data
+#   {{ texture_clipTexture }}      - not used
+#   {{ texture_modulateTexture }}  - not used
+#   {{ texture_colourTexture }}    - Texture containing colour map
+#   {{ texture_negColourTexture }} - Texture containing negative colour map
+#
+#
+# Constants:
+#   numSteps             - Number of ray-casting iterations
+#   numClipPlanes        - Number of active clipping planes
+#   clipMode             - Clipping mode - 1 clips the intersection,
+#                          2 the union, or 3 the complement of all
+#                          active clipping planes.
+#   kill_fragments_early - must be set to False
+#   texture_is_2d        - If True, the imageTexture is assumed to be a 2D
+#                          texture.
+#
+# Author: Paul McCarthy <pauldmccarthy@gmail.com>
+#
+
+{{ arb_include('textest.prog')         }}
+{{ arb_include('texture_border.prog')  }}
+{{ arb_include('glvolume_common.prog') }}
+
+
+PARAM clipPlanes[5] = {{ param5_clipPlanes }};
+
+TEMP  depth;
+TEMP  skipTest;
+TEMP  startingColour;
+TEMP  tempVar1;
+TEMP  tempVar2;
+
+TEMP  dither;
+TEMP  texCoord;
+TEMP  clipTexCoord;
+TEMP  colour;
+TEMP  voxValue;
+TEMP  tempColour;
+TEMP  finalColour;
+
+
+# Initialise texture coordinates.
+MAD texCoord.xyz, {{ param_settings }}.y, {{ param_rayStep }}, {{ varying_texCoord     }};
+
+
+# Generate a random number
+# between 0 and 1 for dithering.
+MOV tempVar1.x, fragment.position.x;
+MOV tempVar1.y, fragment.position.y;
+MUL tempVar1.x, tempVar1.x, 12.9898;
+MUL tempVar1.y, tempVar1.y, 78.233;
+ADD tempVar1.x, tempVar1.x, tempVar1.y;
+SIN tempVar1.x, tempVar1.x;
+MUL tempVar1.x, tempVar1.x, 43758.5453;
+FRC tempVar1.x, tempVar1.x;
+
+
+# Add dither to the starting location
+MUL dither,        {{ param_rayStep }}, tempVar1.x;
+ADD texCoord.xyz,     texCoord,         dither;
+
+
+# Retrieve the starting colour and depth
+MUL tempVar1.xy,    fragment.position, {{ param_screenSize        }};
+TEX startingColour, tempVar1,          {{ texture_startingTexture }}, 2D;
+TEX depth,          tempVar1,          {{ texture_depthTexture    }}, 2D;
+
+
+MOV texCoord.w,  1;
+MOV skipTest,    1;
+MOV finalColour, startingColour;
+
+
+# Set depth.w < 0 if depth has already been
+# set in a previous pass, > 0 otherwise. If
+# depth has already been set, we want to pass
+# through that value, rather than calculating
+# it again. Initial value for a depth texture
+# is 1 (and depth textures are clamped to 0
+# [closer to screen], 1 [farther from screen]),
+# so if it is < 1, we assume it has already
+# been set.
+SUB depth.w, depth.x, 1;
+CMP depth.w, depth.w, -1, 1;
+
+
+# Start the ray-casting loop
+{% for i in range(numSteps) %}
+
+
+# Look up the colour to
+# use for this fragment
+{{
+arb_call('glvolume_common.prog',
+         texCoord='texCoord',
+         clipTexCoord='{ 0, 0, 0, 0}',
+         modTexCoord='{ 0, 0, 0, 0}',
+         clipping='{{ param_clipping }}',
+         modulate='{ 0, 0, -1, 1 }',
+         negCmap='{{ param_negCmap }}',
+         voxValXform='{{ param_voxValXform }}',
+         imageTexture='{{ texture_imageTexture }}',
+         clipTexture='{{ texture_clipTexture }}',
+         modulateTexture='{{ texture_modulateTexture }}',
+         colourTexture='{{ texture_colourTexture }}',
+         negColourTexture='{{ texture_negColourTexture }}',
+         out_kill='skipTest',
+         out_colour='colour',
+         out_voxValue='voxValue')
+}}
+
+
+# Count the number of active clipping planes.
+# We increment tempVar1.x for every clip plane
+# that the texCoord is on the wrong side of.
+MOV tempVar1.x, 0;
+{% for j in range(numClipPlanes) %}
+
+DP3 tempVar1.y, clipPlanes[{{ j }}], texCoord;
+ADD tempVar1.y, tempVar1.y,          clipPlanes[{{ j }}].w;
+CMP tempVar1.y, tempVar1.y, 1, 0;
+ADD tempVar1.x, tempVar1.x, tempVar1.y;
+
+{% endfor %}
+
+
+# Figure out whether the current ray
+# position is in the intersection
+# (clipMode == 1), union (clipMode == 2)
+# or complement (clipMode == 3) of all
+# clipping planes. If it is, then
+# don't sample this position, and keep
+# casting.
+{% if numClipPlanes > 0 %}
+
+# intersection - active clip planes == all clip planes
+{% if clipMode == 1 %}
+SGE tempVar1.x, tempVar1.x, {{ numClipPlanes }};
+MAD tempVar1.x, tempVar1.x,    -2, 1;
+MIN skipTest.x, skipTest.x,    tempVar1.x;
+
+# union - active clip planes >= 1
+{% elif clipMode == 2 %}
+SGE tempVar1.x,  tempVar1.x,  1;
+MAD tempVar1.x,  tempVar1.x, -2, 1;
+MIN skipTest.x,  skipTest.x,  tempVar1.x;
+
+# complement - numClipPlanes > 0 and active clip planes == 0
+{% elif clipMode == 3 %}
+SLT tempVar1.x,  tempVar1.x,  1;
+MAD tempVar1.x,  tempVar1.x, -2, 1;
+MIN skipTest.x,  skipTest.x,  tempVar1.x;
+{% endif %}
+
+{% endif %}
+
+
+# Check whether the
+# texcoords are in bounds
+{{ arb_call('textest.prog', texCoord='texCoord', out_result='tempVar1') }}
+MIN skipTest.x, skipTest.x, tempVar1.x;
+
+
+# Check whether the accumulated
+# colour alpha is already high enough.
+# If it is, we don't consider the
+# values from any more samples on the
+# ray.
+SLT tempVar1.x, finalColour.a, 0.999;
+MAD tempVar1.x, tempVar1.x,    2.0, -1;
+MIN skipTest.x, skipTest.x,    tempVar1.x;
+
+
+# Adjust the sample opacity -
+# if blendByIntesnity (screenSize.z),
+# it is a function of the (normalised)
+# voxel intensity and the blend factor
+# (stored in tempVar1.y):
+#
+#   a = 1 - pow(1 - clamp(voxValue, 0, 1), 1 - blendFactor);
+#
+# Otherwise it is just a function of
+# the blend factor (stored in tempVar1.x):
+#
+#   a = 1 - blendFactor;
+
+SUB tempVar1.x, 1, {{ param_settings }}.x;
+
+# Clamp voxValue to [0, 1]
+# (MOV_SAT does not work for me)
+MIN tempVar1.y, voxValue.x, 1;
+MAX tempVar1.y, tempVar1.y,  0;
+SUB tempVar1.y,  1, tempVar1.y;
+SUB tempVar1.z, 1, {{ param_settings }}.x;
+POW tempVar1.y, tempVar1.y, tempVar1.z;
+SUB tempVar1.y, 1, tempVar1.y;
+
+# blend by intensity or just blend by blend factor
+CMP colour.a, {{ param_screenSize }}.z, tempVar1.x, tempVar1.y;
+
+MUL colour.rgb, colour, colour.a;
+
+# Blend the sample into the
+# accumulated colour, storing
+# the result in tempColour.
+SUB tempVar1.x, 1, finalColour.a;
+MAD tempColour, tempVar1.x, colour, finalColour;
+
+# Figure out if we should consider this
+# sample for depth calculation:
+#  - skipTest.x tells us whether this sample
+#    should be discarded
+#  - depth.w tells us whether we already have
+#    a depth value
+#  - {{ param_screenSize }}.z tells us whether
+#    we are modulating alpha by voxel intensity
+#    (depth is calculated differently depending
+#    on whether we are or not)
+#
+# If modulating alpha by voxel intensity, we
+# take the depth of the first sample on the ray
+# with intensity >= 0.1 (voxel values are
+# normalised to [0, 1] w.r.t. current display
+# range).
+#
+# If not blending by voxel intensity, we
+# take the depth of the first sample.
+#
+# We accumulate all of these conditionals into
+# tempVar1.x, such that it is == 0 if we should
+# take the depth value from this sample, < 0
+# otherwise.
+SLT tempVar1.x, skipTest.x, 0; # set x if should skip
+SLT tempVar1.y, depth.w,    0; # set y if already have depth
+
+SUB tempVar1.z, voxValue.x, {{ param_negCmap }}.y;   # set z if below threshold
+SLT tempVar1.z, voxValue.x, 0.1;
+ADD tempVar1.z, tempVar1.z, {{ param_screenSize }}.z; # and blending by intensity
+SGE tempVar1.z, tempVar1.z, 2;
+ADD tempVar1.x, tempVar1.x, tempVar1.y;
+ADD tempVar1.x, tempVar1.x, tempVar1.z;
+MUL tempVar1.x, tempVar1.x, -1;
+
+# Calculate the screen depth of the
+# current ray position, storing it
+# in tempVar1.
+ADD tempVar2, texCoord, dither;
+DP4 tempVar1.z, {{ param_tex2ScreenXform }}, tempVar2;
+
+# Save the depth value to depth.x, based on
+# conditional tests above.
+CMP depth.x, tempVar1.x, depth.x, tempVar1.z;
+
+# If we have just set the depth,
+# set depth.w to < 0 so that we
+# don't overwrite the depth on a
+# subsequent sample.
+CMP depth.w, tempVar1.x, depth.w, -1;
+
+
+# Only update the accumulated colour
+# buffer if:
+#   - the voxel value was not nan
+#   - the voxel value was not clipped
+#   - the ray position was inside the volume
+#   - the accumulated colour has not yet
+#     reached the alpha threshold
+# All of these conditions have been
+# accumulated into skipTest.x
+CMP finalColour, skipTest.x, finalColour, tempColour;
+
+
+# Shift the ray position
+ADD texCoord.xyz,     texCoord,     {{ param_rayStep }};
+ADD clipTexCoord.xyz, clipTexCoord, {{ param_rayStep }};
+
+{% endfor %}
+
+# set tempVar1.w to -1 if this is the final
+# pass, and we still don't have a depth
+# value, 0 otherwise.
+SGE tempVar1.x, {{ param_settings }}.z, 1;
+SGE tempVar1.y, depth.w,                1;
+ADD tempVar1.x, tempVar1.x,              tempVar1.y;
+SGE tempVar1.x, tempVar1.x,              2;
+MUL tempVar1.w, tempVar1.x,             -1;
+
+# Calculate the depth value corresponding
+# to the very first sample in this ray.
+ADD tempVar1.xyz, {{ param_rayStep }},         {{ varying_texCoord }};
+ADD tempVar1.xyz, tempVar1, dither;
+DP4 tempVar1.z,   {{ param_tex2ScreenXform }}, tempVar1;
+
+# Use it if we don't already have a depth
+CMP depth.x, tempVar1.w, tempVar1.z, depth.x;
+
+
+# If startingColour.a == 0 and
+#    finalColour.a    == 0,
+#
+# it means we've taken no samples,
+# so kill the fragment.
+
+ADD tempVar1.x, startingColour.a, finalColour.a;
+MUL tempVar1.x, tempVar1.x, -1;
+CMP tempVar1.x, tempVar1.x,  1, -1;
+KIL tempVar1.x;
+
+# Finalise alpha if requested
+MUL tempColour.a, finalColour.a, {{ param_settings }}.w;
+CMP finalColour.a, {{ param_settings }}.z, finalColour.a, tempColour.a;
+
+MOV result.color, finalColour;
+MOV result.depth, depth.x;
+
+
+END

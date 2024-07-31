@@ -1,0 +1,18 @@
+!!ARBvp1.0
+#
+# Vertex program for filters - see the fsleyes.gl.shaders.filter module.
+#
+# Passes the corresponding voxel and texture coordinates through to the
+# fragment program.
+#
+# Input attributes:
+#    {{ attr_vertex }}   - Vertex coordinates
+#    {{ attr_texCoord }} - Texture coordinates
+#
+# Output varyings:
+#    {{ varying_texCoord }} - Image texture coordinates
+#
+
+MOV    result.position,     {{ attr_vertex }};
+MOV {{ varying_texCoord }}, {{ attr_texCoord }};
+END

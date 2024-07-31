@@ -1,0 +1,68 @@
+!!ARBfp1.0
+#
+# Fragment program used for rendering GLMesh instances in 3D.
+#
+# See the glmesh_data_common.prog routine for documentation on all of the
+# inputs.
+#
+# Input parameters:
+#
+#   {{ param_settings }}
+#   {{ param_clipping }}
+#   {{ param_modulate }}
+#   {{ param_flatColour }}
+#   {{ param4_cmapXform }}
+#   {{ param_lightPos }} - The xyz components contain the light position
+#                          in display coordinates.
+#
+#   {{ param_lighting }} - The x component contains a 1 if lighting should
+#                          be applied, or a 0 if lighting should not be
+#                          applied.
+#
+# Input textures:
+#   - {{ texture_cmap }}
+#   - {{ texture_negCmap }}
+#
+# Input varyings:
+#   - {{ varying_vertexData }}   - Vertex data value
+#   - {{ varying_modulateData }} - Vertex alpha modulation value
+#   - {{ varying_vertex }}       - Vertex position in display coordinates
+#   - {{ varying_normal }}       - Vertex normal
+#
+# Author: Paul McCarthy <pauldmccarthy@gmail.com>
+#
+
+{{ arb_include('glmesh_data_common.prog') }}
+{{ arb_include('glmesh_3d_lighting.prog') }}
+
+PARAM cmapXform[4] = {{ param4_cmapXform }};
+
+TEMP unlitColour;
+TEMP litColour;
+TEMP useLight;
+
+{{ arb_call('glmesh_data_common.prog',
+            settings='{{ param_settings }}',
+            clipping='{{ param_clipping }}',
+            modulate='{{ param_modulate }}',
+            flatColour='{{ param_flatColour }}',
+            cmapXform='cmapXform',
+            cmap='{{ texture_cmap }}',
+            negCmap='{{ texture_negCmap }}',
+            vertexData='{{ varying_vertexData }}',
+            modulateData='{{ varying_modulateData }}',
+            out_colour='unlitColour')
+}}
+
+{{ arb_call('glmesh_3d_lighting.prog',
+            vertex='{{ varying_vertex }}',
+            normal='{{ varying_normal }}',
+            lightPos='{{ param_lightPos }}',
+            colour='unlitColour',
+            out_colour='litColour')
+}}
+
+SUB useLight, {{ param_lighting }}, 0.5;
+CMP result.color, useLight.x, unlitColour, litColour;
+
+END

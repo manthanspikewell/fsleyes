@@ -1,0 +1,59 @@
+!!ARBvp1.0
+#
+# Vertex program for rendering GLVolume instances.
+#
+# Performs a standard transformation of the vertex coordinates, and
+# passes the corresponding voxel and texture coordinates through to the
+# fragment program.
+#
+# Input parameters:
+#    clipCoordXform - Matrix which transforms image texture coordinates
+#                     into clip image texture coordinates.
+#    modCoordXform  - Matrix which transforms image texture coordinates
+#                     into modulate image texture coordinates.
+
+#
+# Input attributes:
+#    texCoord - Texture coordinates
+#
+# Outputs:
+#    texCoord     - Image texture coordinates
+#    clipTexCoord - Clip image texture coordinates
+#    modTexCoord  - Modulate image texture coordinates
+#
+
+PARAM clipCoordXform[4] = {{ param4_clipCoordXform }};
+PARAM modCoordXform[ 4] = {{ param4_modCoordXform  }};
+
+TEMP texCoord;
+
+# We assume that vertices have already
+# been transformed by the MVP matrix
+MOV result.position, vertex.position;
+
+# Get the texture coordinates, make
+# sure the 4th component is 1.
+MOV texCoord, {{ attr_texCoord }};
+MOV texCoord.w, 1;
+
+# Pass texture coordinates
+# through to the fragment program.
+MOV {{ varying_texCoord }}, texCoord;
+
+# Transform the image texture
+# coordinates into clip image
+# texture coordinates.
+DP4 {{ varying_clipTexCoord }}.x, clipCoordXform[0], texCoord;
+DP4 {{ varying_clipTexCoord }}.y, clipCoordXform[1], texCoord;
+DP4 {{ varying_clipTexCoord }}.z, clipCoordXform[2], texCoord;
+DP4 {{ varying_clipTexCoord }}.w, clipCoordXform[3], texCoord;
+
+# Transform the image texture
+# coordinates into modulate
+#  imagetexture coordinates.
+DP4 {{ varying_modTexCoord }}.x, modCoordXform[0], texCoord;
+DP4 {{ varying_modTexCoord }}.y, modCoordXform[1], texCoord;
+DP4 {{ varying_modTexCoord }}.z, modCoordXform[2], texCoord;
+DP4 {{ varying_modTexCoord }}.w, modCoordXform[3], texCoord;
+
+END

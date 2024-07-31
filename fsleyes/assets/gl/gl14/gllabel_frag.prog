@@ -1,0 +1,66 @@
+!!ARBfp1.0
+#
+# Fragment program used for rendering GLLabel instances.
+# This is to be used with the glvolume_vert.prog vertex shader.
+#
+# Input parameters:
+#
+#   voxValXform          - Vector with x component defining a scale, and y
+#                          component defining an offset, with which image
+#                          texture values can be transformed into the range
+#                          [0, 1], for use as a colour map texture coordinate.
+#
+#   invNumLabels         - 1.0 / (number of labels in the lookup table)
+#
+# Input varyings:
+#
+#   texCoord - Fragment texture coordinates
+#
+# Input textures:
+#
+#   imageTexture - 3D texture containing the image data
+#   lutTexture   - 1D texture containing the lookup table colours
+#
+# Author: Paul McCarthy <pauldmccarthy@gmail.com>
+#
+
+
+{{ arb_include('textest.prog') }}
+
+
+TEMP  lutCoord;
+TEMP  invNumLabels;
+TEMP  voxValue;
+
+MOV   invNumLabels,   {{ param_invNumLabels }};
+PARAM outline       = {{ param_outline      }};
+PARAM voxValXform   = {{ param_voxValXform  }};
+
+# bail if texture coordinates are out of bounds
+# we use voxValue here out of convenience
+{{
+arb_call('textest.prog',
+         texCoord='{{ varying_texCoord }}',
+         out_result='voxValue')
+}}
+KIL voxValue.x;
+
+# look up image voxel value
+# from 3D image texture
+TEX voxValue, {{ varying_texCoord }}, {{ texture_imageTexture }}, 3D;
+
+# Scale the texture value
+# to its original voxel value
+MOV lutCoord, voxValue;
+MAD lutCoord, lutCoord, voxValXform.x, voxValXform.y;
+
+# Scale the voxel value to
+# a lut texture coordinate
+ADD lutCoord, lutCoord, { 0.5, 0, 0, 0 };
+MUL lutCoord, lutCoord, invNumLabels;
+
+# look up the appropriate colour
+# in the 1D colour map texture
+TEX result.color, lutCoord.x, {{ texture_lutTexture }}, 1D;
+
+END

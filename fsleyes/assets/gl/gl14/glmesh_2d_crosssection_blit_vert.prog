@@ -1,0 +1,3 @@
+!!ARBvp1.0
+MOV result.position, {{ attr_vertex }};
+END
